@@ -24,9 +24,13 @@ from googleapiclient.errors import HttpError
 from libcloudforensics.providers.gcp.internal import common, build
 from libcloudforensics.providers.gcp.internal import compute_base_resource
 from libcloudforensics.scripts import utils
+from libcloudforensics import logging_utils
 
 if TYPE_CHECKING:
   import googleapiclient
+
+logging_utils.SetUpLogger(__name__)
+logger = logging_utils.GetLogger(__name__)
 
 
 class GoogleCloudCompute(common.GoogleCloudComputeClient):
@@ -185,7 +189,7 @@ class GoogleCloudCompute(common.GoogleCloudComputeClient):
       self,
       snapshot: 'GoogleComputeSnapshot',
       disk_name: Optional[str] = None,
-      disk_name_prefix: str = '',
+      disk_name_prefix: Optional[str] = None,
       disk_type: str = 'pd-standard') -> 'GoogleComputeDisk':
     """Create a new disk based on a Snapshot.
 
@@ -505,6 +509,60 @@ class GoogleCloudCompute(common.GoogleCloudComputeClient):
     self.BlockOperation(response)
     return GoogleComputeImage(self.project_id, '', name)
 
+  def CreateImageFromGcsTarGz(
+      self,
+      gcs_uri: str,
+      name: Optional[str] = None) -> 'GoogleComputeImage':
+    """Creates a GCE image from a Gzip compressed Tar archive in GCS.
+
+    Args:
+      gcs_uri (str): Path to the compressed image archive
+          (image.tar.gz) in Cloud Storage. It must be a gzip compressed
+          tar archive with the extension .tar.gz.
+          ex: 'https://storage.cloud.google.com/foo/bar.tar.gz'
+          'gs://foo/bar.tar.gz'
+          'foo/bar.tar.gz'
+      name (str): Optional. Name of the image to create. Default
+          is [src_disk.name]-[TIMESTAMP('%Y%m%d%H%M%S')].
+
+    Returns:
+      GoogleComputeImage: A Google Compute Image object.
+
+    Raises:
+      ValueError: If the GCE Image name is invalid, or if the extension of
+          the archived image is not valid.
+    """
+
+    if name:
+      if not common.REGEX_DISK_NAME.match(name):
+        raise ValueError(
+            'Image name {0:s} does not comply with {1:s}'.format(
+                name, common.REGEX_DISK_NAME.pattern))
+      name = name[:common.COMPUTE_NAME_LIMIT]
+    else:
+      name = common.GenerateUniqueInstanceName('imported-image',
+                                               common.COMPUTE_NAME_LIMIT)
+
+    if not gcs_uri.lower().endswith('.tar.gz'):
+      raise ValueError(
+          'Image imported from {0:s} must be a GZIP compressed TAR '
+          'archive with the extension: .tar.gz'.format(gcs_uri))
+    gcs_uri = os.path.relpath(gcs_uri, 'gs://')
+    if not gcs_uri.startswith(common.STORAGE_LINK_URL):
+      gcs_uri = os.path.join(common.STORAGE_LINK_URL, gcs_uri)
+    image_body = {
+        'name': name,
+        "rawDisk": {
+            'source': gcs_uri
+        }
+    }
+    gce_image_client = self.GceApi().images()
+    request = gce_image_client.insert(
+        project=self.project_id, body=image_body, forceCreate=True)
+    response = request.execute()
+    self.BlockOperation(response)
+    return GoogleComputeImage(self.project_id, '', name)
+
   def CreateDiskFromImage(self,
                           src_image: 'GoogleComputeImage',
                           zone: str,
@@ -601,7 +659,7 @@ class GoogleCloudCompute(common.GoogleCloudComputeClient):
           'For bootable images, operating system name'
           ' (os_name) must be specified.')
     elif os_name not in supported_os:
-      common.LOGGER.warning(
+      logger.warning(
           ('Operating system of the imported image is not within the '
            'supported list:\n{0:s}\nFor the up-to-date list please refer '
            'to:\n{1:s}').format(
@@ -639,7 +697,7 @@ class GoogleCloudCompute(common.GoogleCloudComputeClient):
     cloud_build = build.GoogleCloudBuild(self.project_id)
     response = cloud_build.CreateBuild(build_body)
     cloud_build.BlockOperation(response)
-    common.LOGGER.info(
+    logger.info(
         'Image {0:s} imported as GCE image {1:s}.'.format(
             storage_image_path, image_name))
     return GoogleComputeImage(self.project_id, '', image_name)
@@ -737,7 +795,7 @@ class GoogleComputeInstance(compute_base_resource.GoogleComputeBaseResource):
     max_retries = 100  # times to retry the connection
     retries = 0
 
-    common.LOGGER.info(
+    logger.info(
         self.FormatLogMessage('Connecting to analysis VM over SSH'))
 
     while retries < max_retries:
@@ -763,7 +821,7 @@ class GoogleComputeInstance(compute_base_resource.GoogleComputeBaseResource):
     if read_write:
       mode = 'READ_WRITE'
 
-    common.LOGGER.info(
+    logger.info(
         self.FormatLogMessage(
             'Attaching {0:s} to VM {1:s} in {2:s} mode'.format(
                 disk.name, self.name, mode)))
@@ -846,7 +904,7 @@ class GoogleComputeDisk(compute_base_resource.GoogleComputeBaseResource):
       raise ValueError(
           'Snapshot name {0:s} does not comply with '
           '{1:s}'.format(snapshot_name, common.REGEX_DISK_NAME.pattern))
-    common.LOGGER.info(
+    logger.info(
         self.FormatLogMessage('New Snapshot: {0:s}'.format(snapshot_name)))
     operation_config = {'name': snapshot_name}
     gce_disk_client = self.GceApi().disks()
@@ -896,7 +954,7 @@ class GoogleComputeSnapshot(compute_base_resource.GoogleComputeBaseResource):
   def Delete(self) -> None:
     """Delete a Snapshot."""
 
-    common.LOGGER.info(
+    logger.info(
         self.FormatLogMessage('Deleted Snapshot: {0:s}'.format(self.name)))
     gce_snapshot_client = self.GceApi().snapshots()
     request = gce_snapshot_client.delete(
@@ -963,7 +1021,7 @@ class GoogleComputeImage(compute_base_resource.GoogleComputeBaseResource):
     cloud_build = build.GoogleCloudBuild(self.project_id)
     response = cloud_build.CreateBuild(build_body)
     cloud_build.BlockOperation(response)
-    common.LOGGER.info(
+    logger.info(
         'Image {0:s} exported to {1:s}.'.format(self.name, full_path))
 
   def Delete(self) -> None:

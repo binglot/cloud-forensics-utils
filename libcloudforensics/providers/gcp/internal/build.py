@@ -73,13 +73,13 @@ class GoogleCloudBuild:
         projectId=self.project_id,
         body=build_body).execute()  # type: Dict[str, Any]
     build_metadata = build_info['metadata']['build']
-    common.LOGGER.info(
+    common.logger.info(
         'Build started, logs bucket: {0:s}, logs URL: {1:s}'.format(
             build_metadata['logsBucket'], build_metadata['logUrl']))
     return build_info
 
   def _RetryExecuteRequest(self, operation_name: str) -> Dict[str, Any]:
-    """Execut GCB operation.get request and retry if error.
+    """Execute GCB operation.get request and retry if error.
 
     Args:
       operation_name (str): The name of the operation resource,
@@ -108,7 +108,7 @@ class GoogleCloudBuild:
         break
       if block_retry == block_retry_max - 1:
         raise RuntimeError(
-            'Faliure blocking Cloud Build operation: {0:s}'.format(
+            'Failure blocking Cloud Build operation: {0:s}'.format(
                 operation_name))
     return response
 

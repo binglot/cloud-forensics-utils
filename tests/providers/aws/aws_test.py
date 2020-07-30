@@ -22,8 +22,10 @@ from libcloudforensics.providers.aws.internal import account, common, ebs, ec2
 from libcloudforensics.providers.aws.internal import log as aws_log
 from libcloudforensics.providers.aws import forensics
 
-FAKE_AWS_ACCOUNT = account.AWSAccount(
-    default_availability_zone='fake-zone-2b')
+with mock.patch('boto3.session.Session._setup_loader') as mock_session:
+  mock_session.return_value = None
+  FAKE_AWS_ACCOUNT = account.AWSAccount(
+      default_availability_zone='fake-zone-2b')
 FAKE_INSTANCE = ec2.AWSInstance(
     FAKE_AWS_ACCOUNT,
     'fake-instance-id',
@@ -232,10 +234,8 @@ class AWSAccountTest(unittest.TestCase):
     self.assertEqual('fake-instance-id', found_instance.instance_id)
     self.assertEqual('fake-zone-2', found_instance.region)
     self.assertEqual('fake-zone-2b', found_instance.availability_zone)
-    self.assertRaises(
-        RuntimeError,
-        FAKE_AWS_ACCOUNT.GetInstanceById,
-        'non-existent-instance-id')
+    with self.assertRaises(RuntimeError):
+      FAKE_AWS_ACCOUNT.GetInstanceById('non-existent-instance-id')
 
   @typing.no_type_check
   @mock.patch('libcloudforensics.providers.aws.internal.account.AWSAccount.ListInstances')
@@ -271,12 +271,13 @@ class AWSAccountTest(unittest.TestCase):
     self.assertEqual(
         'fake-instance-with-name-id', found_instances[0].instance_id)
 
-    self.assertRaises(ValueError, FAKE_AWS_ACCOUNT.GetInstancesByNameOrId)
-    self.assertRaises(
-        ValueError,
-        FAKE_AWS_ACCOUNT.GetInstancesByNameOrId,
-        instance_id=FAKE_INSTANCE.instance_id,
-        instance_name=FAKE_INSTANCE_WITH_NAME.name)
+    with self.assertRaises(ValueError):
+      FAKE_AWS_ACCOUNT.GetInstancesByNameOrId()
+
+    with self.assertRaises(ValueError):
+      FAKE_AWS_ACCOUNT.GetInstancesByNameOrId(
+          instance_id=FAKE_INSTANCE.instance_id,
+          instance_name=FAKE_INSTANCE_WITH_NAME.name)
 
   @typing.no_type_check
   @mock.patch('libcloudforensics.providers.aws.internal.account.AWSAccount.ListVolumes')
@@ -322,12 +323,13 @@ class AWSAccountTest(unittest.TestCase):
     self.assertEqual(
         'fake-boot-volume-id', found_volumes[0].volume_id)
 
-    self.assertRaises(ValueError, FAKE_AWS_ACCOUNT.GetVolumesByNameOrId)
-    self.assertRaises(
-        ValueError,
-        FAKE_AWS_ACCOUNT.GetVolumesByNameOrId,
-        volume_id=FAKE_VOLUME.volume_id,
-        volume_name=FAKE_BOOT_VOLUME.name)
+    with self.assertRaises(ValueError):
+      FAKE_AWS_ACCOUNT.GetVolumesByNameOrId()
+
+    with self.assertRaises(ValueError):
+      FAKE_AWS_ACCOUNT.GetVolumesByNameOrId(
+          volume_id=FAKE_VOLUME.volume_id,
+          volume_name=FAKE_BOOT_VOLUME.name)
 
   @typing.no_type_check
   @mock.patch('libcloudforensics.providers.aws.internal.account.AWSAccount.ClientApi')
@@ -545,8 +547,10 @@ class AWSCommon(unittest.TestCase):
     """Test that the instance type matches the requested amount of CPU cores."""
     self.assertEqual('m4.large', common.GetInstanceTypeByCPU(2))
     self.assertEqual('m4.16xlarge', common.GetInstanceTypeByCPU(64))
-    self.assertRaises(ValueError, common.GetInstanceTypeByCPU, 0)
-    self.assertRaises(ValueError, common.GetInstanceTypeByCPU, 256)
+    with self.assertRaises(ValueError):
+      common.GetInstanceTypeByCPU(0)
+    with self.assertRaises(ValueError):
+      common.GetInstanceTypeByCPU(256)
 
 
 class AWSTest(unittest.TestCase):
@@ -554,6 +558,7 @@ class AWSTest(unittest.TestCase):
   # pylint: disable=line-too-long
 
   @typing.no_type_check
+  @mock.patch('boto3.session.Session._setup_loader')
   @mock.patch('libcloudforensics.providers.aws.internal.ebs.AWSVolume.Snapshot')
   @mock.patch('libcloudforensics.providers.aws.internal.account.AWSAccount.GetVolumeById')
   @mock.patch('libcloudforensics.providers.aws.internal.account.AWSAccount.GetAccountInformation')
@@ -562,13 +567,15 @@ class AWSTest(unittest.TestCase):
                             mock_ec2_api,
                             mock_account,
                             mock_get_volume,
-                            mock_snapshot):
+                            mock_snapshot,
+                            mock_loader):
     """Test that a volume is correctly cloned."""
     FAKE_SNAPSHOT.name = FAKE_VOLUME.volume_id
     mock_ec2_api.return_value.create_volume.return_value = MOCK_CREATE_VOLUME
     mock_account.return_value = 'fake-account-id'
     mock_get_volume.return_value = FAKE_VOLUME
     mock_snapshot.return_value = FAKE_SNAPSHOT
+    mock_loader.return_value = None
 
     # CreateVolumeCopy(zone, volume_id='fake-volume-id'). This should grab
     # the volume 'fake-volume-id'.
@@ -581,6 +588,7 @@ class AWSTest(unittest.TestCase):
     self.assertTrue(new_volume.name.endswith('-copy'))
 
   @typing.no_type_check
+  @mock.patch('boto3.session.Session._setup_loader')
   @mock.patch('libcloudforensics.providers.aws.internal.ebs.AWSVolume.Snapshot')
   @mock.patch('libcloudforensics.providers.aws.internal.ec2.AWSInstance.GetBootVolume')
   @mock.patch('libcloudforensics.providers.aws.internal.account.AWSAccount.GetInstanceById')
@@ -591,7 +599,8 @@ class AWSTest(unittest.TestCase):
                             mock_account,
                             mock_get_instance,
                             mock_get_volume,
-                            mock_snapshot):
+                            mock_snapshot,
+                            mock_loader):
     """Test that a volume is correctly cloned."""
     FAKE_SNAPSHOT.name = FAKE_BOOT_VOLUME.volume_id
     mock_ec2_api.return_value.create_volume.return_value = MOCK_CREATE_VOLUME
@@ -599,6 +608,7 @@ class AWSTest(unittest.TestCase):
     mock_get_instance.return_value = FAKE_INSTANCE
     mock_get_volume.return_value = FAKE_BOOT_VOLUME
     mock_snapshot.return_value = FAKE_SNAPSHOT
+    mock_loader.return_value = None
 
     # CreateVolumeCopy(zone, instance='fake-instance-id'). This should grab
     # the boot volume of the instance.
@@ -611,30 +621,35 @@ class AWSTest(unittest.TestCase):
     self.assertTrue(new_volume.name.endswith('-copy'))
 
   @typing.no_type_check
+  @mock.patch('boto3.session.Session._setup_loader')
   @mock.patch('libcloudforensics.providers.aws.internal.account.AWSAccount.ListVolumes')
   @mock.patch('libcloudforensics.providers.aws.internal.account.AWSAccount.ListInstances')
-  def testCreateVolumeCopy3(self, mock_list_instances, mock_list_volumes):
+  def testCreateVolumeCopy3(self,
+                            mock_list_instances,
+                            mock_list_volumes,
+                            mock_loader):
     """Test that a volume is correctly cloned."""
+    mock_loader.return_value = None
     # Should raise a ValueError exception  as no volume_id or instance_id is
     # specified.
-    self.assertRaises(
-        ValueError, forensics.CreateVolumeCopy, FAKE_INSTANCE.availability_zone)
+    with self.assertRaises(ValueError):
+      forensics.CreateVolumeCopy(FAKE_INSTANCE.availability_zone)
 
     # Should raise a RuntimeError in GetInstanceById as we are querying a
     # non-existent instance.
     mock_list_instances.return_value = {}
-    self.assertRaises(RuntimeError,
-                      forensics.CreateVolumeCopy,
-                      FAKE_INSTANCE.availability_zone,
-                      instance_id='non-existent-instance-id')
+    with self.assertRaises(RuntimeError):
+      forensics.CreateVolumeCopy(
+          FAKE_INSTANCE.availability_zone,
+          instance_id='non-existent-instance-id')
 
     # Should raise a RuntimeError in GetVolumeById as we are querying a
     # non-existent volume.
     mock_list_volumes.return_value = {}
-    self.assertRaises(RuntimeError,
-                      forensics.CreateVolumeCopy,
-                      FAKE_INSTANCE.availability_zone,
-                      volume_id='non-existent-volume-id')
+    with self.assertRaises(RuntimeError):
+      forensics.CreateVolumeCopy(
+          FAKE_INSTANCE.availability_zone,
+          volume_id='non-existent-volume-id')
 
 
 if __name__ == '__main__':

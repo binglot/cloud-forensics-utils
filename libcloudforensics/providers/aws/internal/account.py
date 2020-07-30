@@ -20,6 +20,7 @@ analysis virtual machine to be used in incident response.
 
 import binascii
 import json
+import os
 from typing import Dict, List, Tuple, Optional, Any
 
 import boto3
@@ -43,7 +44,10 @@ class AWSAccount:
 
   def __init__(self,
                default_availability_zone: str,
-               aws_profile: Optional[str] = None) -> None:
+               aws_profile: Optional[str] = None,
+               aws_access_key_id: Optional[str] = None,
+               aws_secret_access_key: Optional[str] = None,
+               aws_session_token: Optional[str] = None) -> None:
     """Initialize the AWS account.
 
     Args:
@@ -51,6 +55,15 @@ class AWSAccount:
           new resources in.
       aws_profile (str): Optional. The AWS profile defined in the AWS
           credentials file to use.
+      aws_access_key_id (str): Optional. If provided together with
+          aws_secret_access_key and aws_session_token, authenticate to AWS
+          using these parameters instead of the credential file.
+      aws_secret_access_key (str): Optional. If provided together with
+          aws_access_key_id and aws_session_token, authenticate to AWS
+          using these parameters instead of the credential file.
+      aws_session_token (str): Optional. If provided together with
+          aws_access_key_id and aws_secret_access_key, authenticate to AWS
+          using these parameters instead of the credential file.
     """
 
     self.aws_profile = aws_profile or 'default'
@@ -58,6 +71,14 @@ class AWSAccount:
     # The region is given by the zone minus the last letter
     # https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/using-regions-availability-zones.html#using-regions-availability-zones-describe # pylint: disable=line-too-long
     self.default_region = self.default_availability_zone[:-1]
+
+    if aws_access_key_id and aws_secret_access_key and aws_session_token:
+      self.session = boto3.session.Session(
+          aws_access_key_id=aws_access_key_id,
+          aws_secret_access_key=aws_secret_access_key,
+          aws_session_token=aws_session_token)
+    else:
+      self.session = boto3.session.Session(profile_name=self.aws_profile)
 
   def ClientApi(self,
                 service: str,
@@ -74,9 +95,8 @@ class AWSAccount:
     """
 
     if region:
-      return boto3.session.Session(profile_name=self.aws_profile).client(
-          service_name=service, region_name=region)
-    return boto3.session.Session(profile_name=self.aws_profile).client(
+      return self.session.client(service_name=service, region_name=region)
+    return self.session.client(
         service_name=service, region_name=self.default_region)
 
   def ResourceApi(self,
@@ -99,9 +119,8 @@ class AWSAccount:
     """
 
     if region:
-      return boto3.session.Session(profile_name=self.aws_profile).resource(
-          service_name=service, region_name=region)
-    return boto3.session.Session(profile_name=self.aws_profile).resource(
+      return self.session.resource(service_name=service, region_name=region)
+    return self.session.resource(
         service_name=service, region_name=self.default_region)
 
   def ListInstances(
@@ -222,8 +241,8 @@ class AWSAccount:
 
   def GetInstancesByNameOrId(
       self,
-      instance_name: str = '',
-      instance_id: str = '',
+      instance_name: Optional[str] = None,
+      instance_id: Optional[str] = None,
       region: Optional[str] = None) -> List[ec2.AWSInstance]:
     """Get instances from an AWS account by their name tag or an ID.
 
@@ -253,10 +272,10 @@ class AWSAccount:
     if (not instance_name and not instance_id) or (instance_name and instance_id):  # pylint: disable=line-too-long
       raise ValueError('You must specify exactly one of [instance_name, '
                        'instance_id]. Got instance_name: {0:s}, instance_id: '
-                       '{1:s}'.format(instance_name, instance_id))
+                       '{1:s}'.format(str(instance_name), str(instance_id)))
     if instance_name:
       return self.GetInstancesByName(instance_name, region=region)
-
+    assert instance_id  # Mypy: assert that instance_id is not None
     return [self.GetInstanceById(instance_id, region=region)]
 
   def GetInstancesByName(self,
@@ -310,8 +329,8 @@ class AWSAccount:
     return instance
 
   def GetVolumesByNameOrId(self,
-                           volume_name: str = '',
-                           volume_id: str = '',
+                           volume_name: Optional[str] = None,
+                           volume_id: Optional[str] = None,
                            region: Optional[str] = None) -> List[ebs.AWSVolume]:
     """Get a volume from an AWS account by its name tag or its ID.
 
@@ -340,10 +359,10 @@ class AWSAccount:
     if (not volume_name and not volume_id) or (volume_name and volume_id):
       raise ValueError('You must specify exactly one of [volume_name, '
                        'volume_id]. Got volume_name: {0:s}, volume_id: '
-                       '{1:s}'.format(volume_name, volume_id))
+                       '{1:s}'.format(str(volume_name), str(volume_id)))
     if volume_name:
       return self.GetVolumesByName(volume_name, region=region)
-
+    assert volume_id  # Mypy: assert that volume_id is not None
     return [self.GetVolumeById(volume_id, region=region)]
 
   def GetVolumesByName(self,
@@ -400,7 +419,7 @@ class AWSAccount:
       self,
       snapshot: ebs.AWSSnapshot,
       volume_name: Optional[str] = None,
-      volume_name_prefix: str = '',
+      volume_name_prefix: Optional[str] = None,
       kms_key_id: Optional[str] = None,
       tags: Optional[Dict[str, str]] = None) -> ebs.AWSVolume:
     """Create a new volume based on a snapshot.
@@ -426,10 +445,9 @@ class AWSAccount:
       volume_name = self._GenerateVolumeName(
           snapshot, volume_name_prefix=volume_name_prefix)
 
-    if not common.REGEX_TAG_VALUE.match(volume_name):
+    if len(volume_name) > 255:
       raise ValueError(
-          'Volume name {0:s} does not comply with '
-          '{1:s}'.format(volume_name, common.REGEX_TAG_VALUE.pattern))
+          'Volume name {0:s} is too long (>255 chars)'.format(volume_name))
 
     if not tags:
       tags = {}
@@ -698,6 +716,7 @@ class AWSAccount:
     volume_id_crc32 = '{0:08x}'.format(
         binascii.crc32(volume_id.encode()) & 0xffffffff)
     truncate_at = 255 - len(volume_id_crc32) - len('-copy') - 1
+    assert snapshot.name  # Mypy: assert that snapshot.name is not None
     if volume_name_prefix:
       volume_name_prefix += '-'
       if len(volume_name_prefix) > truncate_at:
@@ -774,3 +793,34 @@ class AWSAccount:
       raise RuntimeError(str(exception))
 
     return images['Images']
+
+  def GenerateSSHKeyPair(self, vm_name: str) -> Tuple[str, str]:
+    """Generate a SSH key pair and returns its name and private key.
+
+    Args:
+      vm_name (str): The VM name for which to generate the key pair.
+
+    Returns:
+      Tuple[str, str]: A tuple containing the key name and the private key for
+          the generated SSH key pair.
+
+    Raises:
+      ValueError: If vm_name is None.
+      RuntimeError: If the key could not be created.
+    """
+
+    if not vm_name:
+      raise ValueError('Parameter vm_name must not be None.')
+
+    # SSH key names need to be unique, therefore we add a random 10 chars hex
+    # string.
+    key_name = '{0:s}-{1:s}-ssh'.format(
+        vm_name, binascii.b2a_hex(os.urandom(10)).decode('utf-8'))
+    client = self.ClientApi(common.EC2_SERVICE)
+    try:
+      key = client.create_key_pair(KeyName=key_name)
+    except client.exceptions.ClientError as exception:
+      raise RuntimeError('Could not create SSH key pair: {0:s}'.format(
+          str(exception)))
+    # If the call was successful, the response contains key information
+    return key['KeyName'], key['KeyMaterial']
